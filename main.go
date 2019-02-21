@@ -1,6 +1,7 @@
 package main
 
 import (
+	"k8s.io/client-go/rest"
 	"io/ioutil"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -41,12 +42,63 @@ type patchOperation struct {
 	Value interface{} `json:"value,omitempty"`
 }
 
-func main() {
+func init() {
 	runtimeScheme := runtime.NewScheme()
 	_ = runtime.ObjectDefaulter(runtimeScheme)
 	registrationv1beta1.AddToScheme(runtimeScheme)
 	certificatesv1beta1.AddToScheme(runtimeScheme)
+}
 
+type CertificateManager struct {
+	clientset kubernetes.Interface
+}
+
+func (cm *CertificateManager) GenerateKey() {
+
+}
+
+
+func (cm *CertificateManager) GetCA(config *rest.Config) ([]byte, error) {
+	caData := config.TLSClientConfig.CAData
+
+	if config.TLSClientConfig.CAFile != "" {
+		return ioutil.ReadFile(config.TLSClientConfig.CAFile)
+	}
+
+	return caData, nil
+}
+
+func (cm *CertificateManager) CreateWebhook(config *rest.Config) error {
+	caData, err := cm.GetCA(config)
+	if err != nil {
+		return err
+	}
+
+	mwcs := cm.clientset.Admissionregistration().MutatingWebhookConfigurations()
+	mwc := createMutatingWebhookConfiguration(caData)
+	_, err = mwcs.Create(mwc)
+	if err != nil && ! errors.IsAlreadyExists(err) {
+		return err
+	} else if err != nil {
+		existingMwc, err := mwcs.Get("snapshot-webhook", metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+
+		existingMeta, _ := meta.Accessor(existingMwc)
+		desiredMeta, _ := meta.Accessor(mwc)
+		desiredMeta.SetResourceVersion(existingMeta.GetResourceVersion())
+
+		_, err = mwcs.Update(mwc)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func main() {
 	config, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
 		clientcmd.NewDefaultClientConfigLoadingRules(),
 		&clientcmd.ConfigOverrides{},
@@ -60,33 +112,11 @@ func main() {
 		log.Fatal(err)
 	}
 
-	caData := config.TLSClientConfig.CAData
-	if config.TLSClientConfig.CAFile != "" {
-		caData, err = ioutil.ReadFile(config.TLSClientConfig.CAFile)
-		if err != nil {
-			log.Fatal(err)
-		}
-	}
+	cm := CertificateManager{clientset: clientset}
 
-	mwcs := clientset.Admissionregistration().MutatingWebhookConfigurations()
-	mwc := createMutatingWebhookConfiguration(caData)
-	_, err = mwcs.Create(mwc)
-	if err != nil && ! errors.IsAlreadyExists(err) {
+	err = cm.CreateWebhook(config)
+	if err != nil {
 		log.Fatal(err)
-	} else if err != nil {
-		existingMwc, err := mwcs.Get("snapshot-webhook", metav1.GetOptions{})
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		existingMeta, _ := meta.Accessor(existingMwc)
-		desiredMeta, _ := meta.Accessor(mwc)
-		desiredMeta.SetResourceVersion(existingMeta.GetResourceVersion())
-
-		_, err = mwcs.Update(mwc)
-		if err != nil {
-			log.Fatal(err)
-		}
 	}
 
 	secret, err := clientset.CoreV1().Secrets("snapshot-webhook").Get("snapshot-webhook", metav1.GetOptions{})
@@ -97,7 +127,7 @@ func main() {
 		}
 
 		csrTemplate := x509.CertificateRequest{
-			Subject:            pkix.Name{
+			Subject: pkix.Name{
 				CommonName: "snapshot-webhook.snapshot-webhook.svc",
 			},
 			SignatureAlgorithm: x509.SHA512WithRSA,

@@ -53,8 +53,39 @@ type CertificateManager struct {
 	clientset kubernetes.Interface
 }
 
-func (cm *CertificateManager) GenerateKey() {
+func (cm *CertificateManager) GenerateKey() ([]byte, []byte, error) {
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, nil, err
+	}
 
+	csrTemplate := x509.CertificateRequest{
+		Subject: pkix.Name{
+			CommonName: "snapshot-webhook.snapshot-webhook.svc",
+		},
+		SignatureAlgorithm: x509.SHA512WithRSA,
+		DNSNames: []string{
+			"snapshot-webhook", "snapshot-webhook.snapshot-webhook",
+			"snapshot-webhook.snapshot-webhook.svc",
+			"snapshot-webhook.snapshot-webhook.svc.cluster",
+			"snapshot-webhook.snapshot-webhook.svc.cluster.local",
+		},
+	}
+
+	csrCertificate, err := x509.CreateCertificateRequest(rand.Reader, &csrTemplate, priv)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	csrEncoded := pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE REQUEST",
+		Bytes: csrCertificate,
+	})
+
+	return pem.EncodeToMemory(&pem.Block{
+		Type:  "PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(priv),
+	}), csrEncoded, err
 }
 
 func (cm *CertificateManager) GetCA(config *rest.Config) ([]byte, error) {
@@ -97,6 +128,69 @@ func (cm *CertificateManager) CreateWebhook(config *rest.Config) error {
 	return nil
 }
 
+func (cm *CertificateManager) RequestCertificate(csr []byte, privateKey []byte) ([]byte, error) {
+	csrs := cm.clientset.Certificates().CertificateSigningRequests()
+
+	req, err := csrutils.RequestCertificate(csrs, csr, "snapshot-webhook", []certificatesv1beta1.KeyUsage{
+		certificatesv1beta1.UsageDigitalSignature,
+		certificatesv1beta1.UsageKeyEncipherment,
+		certificatesv1beta1.UsageServerAuth,
+	}, privateKey)
+	if err != nil {
+		return nil, err
+	}
+
+	log.Println("Waiting for certificate to be authorized, run: kubectl certificate approve snapshot-webhook")
+	return csrutils.WaitForCertificate(csrs, req, time.Second*60)
+}
+
+
+func (cm *CertificateManager) GetCertificate() (tls.Certificate, error) {
+	secret, err := cm.clientset.CoreV1().Secrets("snapshot-webhook").Get("snapshot-webhook", metav1.GetOptions{})
+	if err != nil && errors.IsNotFound(err) {
+		privateKey, csrEncoded, err := cm.GenerateKey()
+		if err != nil {
+			return tls.Certificate{}, err
+		}
+
+		cert, err := cm.RequestCertificate(csrEncoded, privateKey)
+		if err != nil {
+			return tls.Certificate{}, err
+		}
+
+		secret, err = cm.clientset.CoreV1().Secrets("snapshot-webhook").Create(&corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "snapshot-webhook",
+				Namespace: "snapshot-webhook",
+			},
+			Data: map[string][]byte{
+				"key.pem":  []byte(b64.StdEncoding.EncodeToString(privateKey)),
+				"cert.pem": []byte(b64.StdEncoding.EncodeToString(cert)),
+			},
+		})
+		if err != nil && !errors.IsAlreadyExists(err) {
+			return tls.Certificate{}, err
+		}
+		log.Println("Generated new certificate and stored in Secret.")
+	} else if err != nil {
+		return tls.Certificate{}, err
+	} else {
+		log.Println("Loaded existing certificate from Secret.")
+	}
+
+	cert, err := b64.StdEncoding.DecodeString(string(secret.Data["cert.pem"]))
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+
+	privateKey, err := b64.StdEncoding.DecodeString(string(secret.Data["key.pem"]))
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+
+	return tls.X509KeyPair(cert, privateKey)
+}
+
 func main() {
 	config, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
 		clientcmd.NewDefaultClientConfigLoadingRules(),
@@ -118,97 +212,16 @@ func main() {
 		log.Fatal(err)
 	}
 
-	secret, err := clientset.CoreV1().Secrets("snapshot-webhook").Get("snapshot-webhook", metav1.GetOptions{})
-	if err != nil && errors.IsNotFound(err) {
-		priv, err := rsa.GenerateKey(rand.Reader, 2048)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		csrTemplate := x509.CertificateRequest{
-			Subject: pkix.Name{
-				CommonName: "snapshot-webhook.snapshot-webhook.svc",
-			},
-			SignatureAlgorithm: x509.SHA512WithRSA,
-			DNSNames: []string{
-				"snapshot-webhook", "snapshot-webhook.snapshot-webhook",
-				"snapshot-webhook.snapshot-webhook.svc",
-				"snapshot-webhook.snapshot-webhook.svc.cluster",
-				"snapshot-webhook.snapshot-webhook.svc.cluster.local",
-			},
-		}
-		csrCertificate, err := x509.CreateCertificateRequest(rand.Reader, &csrTemplate, priv)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		csrs := clientset.Certificates().CertificateSigningRequests()
-
-		csrEncoded := pem.EncodeToMemory(&pem.Block{
-			Type:  "CERTIFICATE REQUEST",
-			Bytes: csrCertificate,
-		})
-
-		req, err := csrutils.RequestCertificate(csrs, csrEncoded, "snapshot-webhook", []certificatesv1beta1.KeyUsage{
-			certificatesv1beta1.UsageDigitalSignature,
-			certificatesv1beta1.UsageKeyEncipherment,
-			certificatesv1beta1.UsageServerAuth,
-		}, priv)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		log.Println("Waiting for certificate to be authorized, run: kubectl certificate approve snapshot-webhook")
-		cert, err := csrutils.WaitForCertificate(csrs, req, time.Second*60)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		privateKey := pem.EncodeToMemory(&pem.Block{
-			Type:  "PRIVATE KEY",
-			Bytes: x509.MarshalPKCS1PrivateKey(priv),
-		})
-
-		secret, err = clientset.CoreV1().Secrets("snapshot-webhook").Create(&corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "snapshot-webhook",
-				Namespace: "snapshot-webhook",
-			},
-			Data: map[string][]byte{
-				"key.pem":  []byte(b64.StdEncoding.EncodeToString(privateKey)),
-				"cert.pem": []byte(b64.StdEncoding.EncodeToString(cert)),
-			},
-		})
-		if err != nil && !errors.IsAlreadyExists(err) {
-			log.Fatal(err)
-		}
-		log.Println("Generated new certificate and stored in Secret.")
-	} else if err != nil {
-		log.Fatal(err)
-	} else {
-		log.Println("Loaded existing certificate from Secret.")
-	}
-
-	cert, err := b64.StdEncoding.DecodeString(string(secret.Data["cert.pem"]))
+	keyPair, err := cm.GetCertificate()
 	if err != nil {
 		log.Fatal(err)
-	}
-
-	privateKey, err := b64.StdEncoding.DecodeString(string(secret.Data["key.pem"]))
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	pair, err := tls.X509KeyPair(cert, privateKey)
-	if err != nil {
-		log.Printf("Filed to load key pair: %v", err)
 	}
 
 	w := &WebhookServer{}
 	w.server = &http.Server{
 		Addr: fmt.Sprintf(":%v", 8443),
 		TLSConfig: &tls.Config{
-			Certificates: []tls.Certificate{pair},
+			Certificates: []tls.Certificate{keyPair},
 		},
 		Handler: w,
 	}

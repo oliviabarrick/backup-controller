@@ -29,7 +29,9 @@ import (
 )
 
 const (
-	annotationKey = "latest-snapshot"
+	annotationKey    = "latest-snapshot"
+	webhookNamespace = "snapshot-webhook"
+	webhookName      = "snapshot-webhook"
 )
 
 type WebhookServer struct {
@@ -59,16 +61,16 @@ func (cm *CertificateManager) GenerateKey() ([]byte, []byte, error) {
 		return nil, nil, err
 	}
 
+	host := fmt.Sprintf("%s.%s", webhookName, webhookNamespace)
+
 	csrTemplate := x509.CertificateRequest{
 		Subject: pkix.Name{
-			CommonName: "snapshot-webhook.snapshot-webhook.svc",
+			CommonName: host + ".svc",
 		},
 		SignatureAlgorithm: x509.SHA512WithRSA,
 		DNSNames: []string{
-			"snapshot-webhook", "snapshot-webhook.snapshot-webhook",
-			"snapshot-webhook.snapshot-webhook.svc",
-			"snapshot-webhook.snapshot-webhook.svc.cluster",
-			"snapshot-webhook.snapshot-webhook.svc.cluster.local",
+			webhookName, host, host + ".svc", host + ".svc.cluster",
+			host + ".svc.cluster.local",
 		},
 	}
 
@@ -110,7 +112,7 @@ func (cm *CertificateManager) CreateWebhook(config *rest.Config) error {
 	if err != nil && !errors.IsAlreadyExists(err) {
 		return err
 	} else if err != nil {
-		existingMwc, err := mwcs.Get("snapshot-webhook", metav1.GetOptions{})
+		existingMwc, err := mwcs.Get(webhookName, metav1.GetOptions{})
 		if err != nil {
 			return err
 		}
@@ -131,7 +133,7 @@ func (cm *CertificateManager) CreateWebhook(config *rest.Config) error {
 func (cm *CertificateManager) RequestCertificate(csr []byte, privateKey []byte) ([]byte, error) {
 	csrs := cm.clientset.Certificates().CertificateSigningRequests()
 
-	req, err := csrutils.RequestCertificate(csrs, csr, "snapshot-webhook", []certificatesv1beta1.KeyUsage{
+	req, err := csrutils.RequestCertificate(csrs, csr, webhookName, []certificatesv1beta1.KeyUsage{
 		certificatesv1beta1.UsageDigitalSignature,
 		certificatesv1beta1.UsageKeyEncipherment,
 		certificatesv1beta1.UsageServerAuth,
@@ -140,13 +142,14 @@ func (cm *CertificateManager) RequestCertificate(csr []byte, privateKey []byte) 
 		return nil, err
 	}
 
-	log.Println("Waiting for certificate to be authorized, run: kubectl certificate approve snapshot-webhook")
+	log.Println("Waiting for certificate to be authorized, run: kubectl certificate approve", webhookName)
 	return csrutils.WaitForCertificate(csrs, req, time.Second*60)
 }
 
-
 func (cm *CertificateManager) GetCertificate() (tls.Certificate, error) {
-	secret, err := cm.clientset.CoreV1().Secrets("snapshot-webhook").Get("snapshot-webhook", metav1.GetOptions{})
+	secrets := cm.clientset.CoreV1().Secrets(webhookNamespace)
+
+	secret, err := secrets.Get(webhookName, metav1.GetOptions{})
 	if err != nil && errors.IsNotFound(err) {
 		privateKey, csrEncoded, err := cm.GenerateKey()
 		if err != nil {
@@ -158,10 +161,10 @@ func (cm *CertificateManager) GetCertificate() (tls.Certificate, error) {
 			return tls.Certificate{}, err
 		}
 
-		secret, err = cm.clientset.CoreV1().Secrets("snapshot-webhook").Create(&corev1.Secret{
+		secret, err = secrets.Create(&corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "snapshot-webhook",
-				Namespace: "snapshot-webhook",
+				Name:      webhookName,
+				Namespace: webhookNamespace,
 			},
 			Data: map[string][]byte{
 				"key.pem":  []byte(b64.StdEncoding.EncodeToString(privateKey)),
@@ -235,7 +238,7 @@ func createMutatingWebhookConfiguration(caCert []byte) *registrationv1beta1.Muta
 
 	return &registrationv1beta1.MutatingWebhookConfiguration{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "snapshot-webhook",
+			Name: webhookName,
 		},
 		Webhooks: []registrationv1beta1.Webhook{
 			registrationv1beta1.Webhook{
@@ -255,8 +258,8 @@ func createMutatingWebhookConfiguration(caCert []byte) *registrationv1beta1.Muta
 				FailurePolicy: &fail,
 				ClientConfig: registrationv1beta1.WebhookClientConfig{
 					Service: &registrationv1beta1.ServiceReference{
-						Namespace: "snapshot-webhook",
-						Name:      "snapshot-webhook",
+						Namespace: webhookNamespace,
+						Name:      webhookName,
 					},
 					CABundle: []byte(caCert),
 				},

@@ -13,10 +13,69 @@ webhooks:
     - CREATE
     resources:
     - persistentvolumeclaims
+  failurePolicy: Fail
   clientConfig:
     service:
       namespace: snapshot-webhook
       name: snapshot-webhook
+    # Set to not-null. Will be fixed by the snapshot-webhook when it initalizes.
+    caBundle: bm90bnVsbA==
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: snapshot-webhook
+  namespace: snapshot-webhook
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: snapshot-webhook
+  namespace: snapshot-webhook
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: snapshot-webhook
+rules:
+- apiGroups: ["certificates.k8s.io"]
+  resources: ["certificatesigningrequests"]
+  verbs: ["get", "list", "create", "watch"]
+- apiGroups: ["admissionregistration.k8s.io"]
+  resources: ["mutatingwebhookconfigurations"]
+  verbs: ["create", "get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: snapshot-webhook
+  namespace: snapshot-webhook
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: snapshot-webhook
+subjects:
+- apiGroup: ""
+  kind: ServiceAccount
+  name: snapshot-webhook
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: snapshot-webhook
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: snapshot-webhook
+subjects:
+- apiGroup: ""
+  kind: ServiceAccount
+  name: snapshot-webhook
+  namespace: snapshot-webhook
 ---
 apiVersion: apps/v1beta1
 kind: Deployment
@@ -34,27 +93,20 @@ spec:
       labels:
         app: snapshot-webhook
     spec:
+      serviceAccountName: snapshot-webhook
       containers:
-      - image: justinbarrick/snapshot-webhook
+      - image: justinbarrick/snapshot-admission-controller
         imagePullPolicy: Always
         name: snapshot-webhook
-        env:
-        - name: TLS_KEY_FILE
-          value: "/ssl/key.pem"
-        - name: TLS_CERT_FILE
-          value: "/ssl/cert.pem"
-        volumeMounts:
-        - mountPath: /ssl/
-          name: cert
         livenessProbe:
           httpGet:
             path: /
-            port: 443
+            port: 8443
             scheme: HTTPS
         readinessProbe:
           httpGet:
             path: /
-            port: 443
+            port: 8443
             scheme: HTTPS
           initialDelaySeconds: 5
           periodSeconds: 10
@@ -65,10 +117,6 @@ spec:
           requests:
             memory: "256Mi"
             cpu: "50m"
-      volumes:
-        - name: cert
-          secret:
-            secretName: snapshot-webhook
 ---
 apiVersion: v1
 kind: Service
@@ -78,6 +126,6 @@ metadata:
 spec:
   ports:
     - port: 443
-      targetPort: 443
+      targetPort: 8443
   selector:
     app: snapshot-webhook

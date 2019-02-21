@@ -55,7 +55,7 @@ func applyPatch(pvc corev1.PersistentVolumeClaim, patchJson []byte) (corev1.Pers
 
 func TestCreatePatch(t *testing.T) {
 	pvc := createPvc()
-	pvc.ObjectMeta.Annotations[annotationKey] = "snapshot.storage.k8s.io/VolumeSnapshot/test"
+	pvc.ObjectMeta.Annotations[annotationKey] = "test"
 
 	patchJson, err := createPatch(pvc)
 	assert.Nil(t, err)

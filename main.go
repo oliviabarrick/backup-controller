@@ -1,22 +1,34 @@
 package main
 
 import (
+	"io/ioutil"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"crypto/tls"
+	"crypto/rsa"
+	"crypto/rand"
 	"encoding/json"
-	"flag"
+	"encoding/pem"
 	"fmt"
+	"time"
 	"net/http"
-	"os"
-	"strings"
-
+	b64 "encoding/base64"
 	"log"
 	"k8s.io/api/admission/v1beta1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	certificatesv1beta1 "k8s.io/api/certificates/v1beta1"
+	registrationv1beta1 "k8s.io/api/admissionregistration/v1beta1"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/kubernetes"
+	csrutils "k8s.io/client-go/util/certificate/csr"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/api/meta"
 )
 
 const (
-	annotationKey = "snapshot-datasource"
+	annotationKey = "latest-snapshot"
 )
 
 type WebhookServer struct {
@@ -30,39 +42,184 @@ type patchOperation struct {
 }
 
 func main() {
-	var port int
-	var certFile string
-	var keyFile string
+	runtimeScheme := runtime.NewScheme()
+	_ = runtime.ObjectDefaulter(runtimeScheme)
+	registrationv1beta1.AddToScheme(runtimeScheme)
+	certificatesv1beta1.AddToScheme(runtimeScheme)
 
-	flag.IntVar(&port, "port", 443, "Webhook server port.")
-	flag.StringVar(&certFile, "cert", os.Getenv("TLS_CERT_FILE"), "File containing the x509 Certificate for HTTPS.")
-	flag.StringVar(&keyFile, "key", os.Getenv("TLS_KEY_FILE"), "File containing the x509 private key to -cert.")
-	flag.Parse()
+	config, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+		clientcmd.NewDefaultClientConfigLoadingRules(),
+		&clientcmd.ConfigOverrides{},
+	).ClientConfig()
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	tlsConfig := tls.Config{}
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	if certFile != "" && keyFile != "" {
-		pair, err := tls.LoadX509KeyPair(certFile, keyFile)
+	caData := config.TLSClientConfig.CAData
+	if config.TLSClientConfig.CAFile != "" {
+		caData, err = ioutil.ReadFile(config.TLSClientConfig.CAFile)
 		if err != nil {
-			log.Printf("Filed to load key pair: %v", err)
+			log.Fatal(err)
+		}
+	}
+
+	mwcs := clientset.Admissionregistration().MutatingWebhookConfigurations()
+	mwc := createMutatingWebhookConfiguration(caData)
+	_, err = mwcs.Create(mwc)
+	if err != nil && ! errors.IsAlreadyExists(err) {
+		log.Fatal(err)
+	} else if err != nil {
+		existingMwc, err := mwcs.Get("snapshot-webhook", metav1.GetOptions{})
+		if err != nil {
+			log.Fatal(err)
 		}
 
-		tlsConfig.Certificates = []tls.Certificate{pair}
+		existingMeta, _ := meta.Accessor(existingMwc)
+		desiredMeta, _ := meta.Accessor(mwc)
+		desiredMeta.SetResourceVersion(existingMeta.GetResourceVersion())
+
+		_, err = mwcs.Update(mwc)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	secret, err := clientset.CoreV1().Secrets("snapshot-webhook").Get("snapshot-webhook", metav1.GetOptions{})
+	if err != nil && errors.IsNotFound(err) {
+		priv, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		csrTemplate := x509.CertificateRequest{
+			Subject:            pkix.Name{
+				CommonName: "snapshot-webhook.snapshot-webhook.svc",
+			},
+			SignatureAlgorithm: x509.SHA512WithRSA,
+			DNSNames: []string{
+				"snapshot-webhook", "snapshot-webhook.snapshot-webhook",
+				"snapshot-webhook.snapshot-webhook.svc",
+				"snapshot-webhook.snapshot-webhook.svc.cluster",
+				"snapshot-webhook.snapshot-webhook.svc.cluster.local",
+			},
+		}
+		csrCertificate, err := x509.CreateCertificateRequest(rand.Reader, &csrTemplate, priv)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		csrs := clientset.Certificates().CertificateSigningRequests()
+
+		csrEncoded := pem.EncodeToMemory(&pem.Block{
+			Type: "CERTIFICATE REQUEST",
+			Bytes: csrCertificate,
+		})
+
+		req, err := csrutils.RequestCertificate(csrs, csrEncoded, "snapshot-webhook", []certificatesv1beta1.KeyUsage{
+			certificatesv1beta1.UsageDigitalSignature,
+			certificatesv1beta1.UsageKeyEncipherment,
+			certificatesv1beta1.UsageServerAuth,
+		}, priv)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		log.Println("Waiting for certificate to be authorized, run: kubectl certificate approve snapshot-webhook")
+		cert, err := csrutils.WaitForCertificate(csrs, req, time.Second * 60)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		privateKey := pem.EncodeToMemory(&pem.Block{
+			Type:  "PRIVATE KEY",
+			Bytes: x509.MarshalPKCS1PrivateKey(priv),
+		})
+
+		secret, err = clientset.CoreV1().Secrets("snapshot-webhook").Create(&corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "snapshot-webhook",
+				Namespace: "snapshot-webhook",
+			},
+			Data: map[string][]byte{
+				"key.pem": []byte(b64.StdEncoding.EncodeToString(privateKey)),
+				"cert.pem": []byte(b64.StdEncoding.EncodeToString(cert)),
+			},
+		})
+		if err != nil && ! errors.IsAlreadyExists(err) {
+			log.Fatal(err)
+		}
+		log.Println("Generated new certificate and stored in Secret.")
+	} else if err != nil {
+		log.Fatal(err)
+	} else {
+		log.Println("Loaded existing certificate from Secret.")
+	}
+
+	cert, err := b64.StdEncoding.DecodeString(string(secret.Data["cert.pem"]))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	privateKey, err := b64.StdEncoding.DecodeString(string(secret.Data["key.pem"]))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	pair, err := tls.X509KeyPair(cert, privateKey)
+	if err != nil {
+		log.Printf("Filed to load key pair: %v", err)
 	}
 
 	w := &WebhookServer{}
 	w.server = &http.Server{
-		Addr:      fmt.Sprintf(":%v", port),
-		TLSConfig: &tlsConfig,
+		Addr:      fmt.Sprintf(":%v", 8443),
+		TLSConfig: &tls.Config{
+			Certificates: []tls.Certificate{pair},
+		},
 		Handler: w,
 	}
 
-	if certFile != "" && keyFile != "" {
-		log.Printf("Started TLS server.")
-		log.Fatal(w.server.ListenAndServeTLS("", ""))
-	} else {
-		log.Printf("Started server.")
-		log.Fatal(w.server.ListenAndServe())
+	log.Printf("Started TLS server.")
+	log.Fatal(w.server.ListenAndServeTLS("", ""))
+}
+
+func createMutatingWebhookConfiguration(caCert []byte) *registrationv1beta1.MutatingWebhookConfiguration {
+	fail := registrationv1beta1.Fail
+
+	return &registrationv1beta1.MutatingWebhookConfiguration{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "snapshot-webhook",
+		},
+		Webhooks: []registrationv1beta1.Webhook{
+			registrationv1beta1.Webhook{
+				Name: "snapshot-webhook.codesink.net",
+				Rules: []registrationv1beta1.RuleWithOperations{
+					registrationv1beta1.RuleWithOperations{
+						Operations: []registrationv1beta1.OperationType{
+							registrationv1beta1.Create,
+						},
+						Rule: registrationv1beta1.Rule{
+							APIGroups: []string{""},
+							APIVersions: []string{"v1"},
+							Resources: []string{"persistentvolumeclaims"},
+						},
+					},
+				},
+				FailurePolicy: &fail,
+				ClientConfig: registrationv1beta1.WebhookClientConfig{
+					Service: &registrationv1beta1.ServiceReference{
+						Namespace: "snapshot-webhook",
+						Name: "snapshot-webhook",
+					},
+					CABundle: []byte(caCert),
+				},
+			},
+		},
 	}
 }
 
@@ -71,18 +228,19 @@ func createPatch(pvc corev1.PersistentVolumeClaim) ([]byte, error) {
 	if annotations == nil {
 		annotations = map[string]string{}
 	}
-	dataSource := strings.Split(annotations[annotationKey], "/")
 
 	patch := []patchOperation{}
 
-	if len(dataSource) > 1 {
+	if annotations[annotationKey] != "" {
+		apiGroup := "snapshot.storage.k8s.io"
+
 		patch = append(patch, patchOperation{
 			Op: "add",
 			Path: "/spec/dataSource",
 			Value: &corev1.TypedLocalObjectReference{
-				APIGroup: &dataSource[0],
-				Kind: dataSource[1],
-				Name: dataSource[2],
+				APIGroup: &apiGroup,
+				Kind: "VolumeSnapshot",
+				Name: annotations[annotationKey],
 			},
 		})
 	}
@@ -91,7 +249,7 @@ func createPatch(pvc corev1.PersistentVolumeClaim) ([]byte, error) {
 }
 
 // main mutation process
-func (w *WebhookServer) mutate(ar *v1beta1.AdmissionReview) *v1beta1.AdmissionResponse {
+func (ws *WebhookServer) mutate(ar *v1beta1.AdmissionReview) *v1beta1.AdmissionResponse {
 	req := ar.Request
 	var pvc corev1.PersistentVolumeClaim
 	if err := json.Unmarshal(req.Object.Raw, &pvc); err != nil {

@@ -8,14 +8,14 @@ This presents a challenge for a GitOps workflow: how can I ensure that the PVCs 
 in a disaster recovery scenario without disturbing my existing PVCs?
 
 That's where the snapshot-admission-controller comes in. The snapshot-admission-controller is a mutating webhook that will set the `dataSource` field on
-a PersistentVolumeClaim to the snapshot referenced in its `snapshot-datasource` annotation. Since the webhook is only invoked when a PersistentVolumeClaim
+a PersistentVolumeClaim to the snapshot referenced in its `latest-snapshot` annotation. Since the webhook is only invoked when a PersistentVolumeClaim
 is created and not when it is updated, this annotation can always be set to the most recent snapshot.
 
 An imagined GitOps workflow is:
 
 1. Checkout the git repository with Kubernetes manifests.
 2. Create a VolumeSnapshot for each PersistentVolumeClaim.
-3. Update the PersistentVolumeClaim's `snapshot-datasource` annotation to the name of the most recent snapshot.
+3. Update the PersistentVolumeClaim's `latest-snapshot` annotation to the name of the most recent snapshot.
 3. Commit and push the VolumeSnapshot, PersistentVolumeClaim, and created VolumeSnapshotContents.
 
 This can be combined with Flux to ensure that volumes can easily be restored in a disaster.
@@ -67,8 +67,8 @@ kind: PersistentVolumeClaim
 metadata:
   name: my-claim
   namespace: default
-  annotation:
-    snapshot-datasource: snapshot.storage.k8s.io/VolumeSnapshot/my-snapshot
+  annotations:
+    latest-snapshot: my-snapshot
 spec:
   accessModes:
   - ReadWriteOnce

@@ -1,31 +1,31 @@
 package main
 
 import (
-	"k8s.io/client-go/rest"
-	"io/ioutil"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"crypto/tls"
-	"crypto/rsa"
-	"crypto/rand"
+	b64 "encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"time"
-	"net/http"
-	b64 "encoding/base64"
-	"log"
+	"io/ioutil"
 	"k8s.io/api/admission/v1beta1"
+	registrationv1beta1 "k8s.io/api/admissionregistration/v1beta1"
+	certificatesv1beta1 "k8s.io/api/certificates/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	certificatesv1beta1 "k8s.io/api/certificates/v1beta1"
-	registrationv1beta1 "k8s.io/api/admissionregistration/v1beta1"
-	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/client-go/kubernetes"
-	csrutils "k8s.io/client-go/util/certificate/csr"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+	csrutils "k8s.io/client-go/util/certificate/csr"
+	"log"
+	"net/http"
+	"time"
 )
 
 const (
@@ -33,7 +33,7 @@ const (
 )
 
 type WebhookServer struct {
-	server           *http.Server
+	server *http.Server
 }
 
 type patchOperation struct {
@@ -57,7 +57,6 @@ func (cm *CertificateManager) GenerateKey() {
 
 }
 
-
 func (cm *CertificateManager) GetCA(config *rest.Config) ([]byte, error) {
 	caData := config.TLSClientConfig.CAData
 
@@ -77,7 +76,7 @@ func (cm *CertificateManager) CreateWebhook(config *rest.Config) error {
 	mwcs := cm.clientset.Admissionregistration().MutatingWebhookConfigurations()
 	mwc := createMutatingWebhookConfiguration(caData)
 	_, err = mwcs.Create(mwc)
-	if err != nil && ! errors.IsAlreadyExists(err) {
+	if err != nil && !errors.IsAlreadyExists(err) {
 		return err
 	} else if err != nil {
 		existingMwc, err := mwcs.Get("snapshot-webhook", metav1.GetOptions{})
@@ -146,7 +145,7 @@ func main() {
 		csrs := clientset.Certificates().CertificateSigningRequests()
 
 		csrEncoded := pem.EncodeToMemory(&pem.Block{
-			Type: "CERTIFICATE REQUEST",
+			Type:  "CERTIFICATE REQUEST",
 			Bytes: csrCertificate,
 		})
 
@@ -160,7 +159,7 @@ func main() {
 		}
 
 		log.Println("Waiting for certificate to be authorized, run: kubectl certificate approve snapshot-webhook")
-		cert, err := csrutils.WaitForCertificate(csrs, req, time.Second * 60)
+		cert, err := csrutils.WaitForCertificate(csrs, req, time.Second*60)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -172,15 +171,15 @@ func main() {
 
 		secret, err = clientset.CoreV1().Secrets("snapshot-webhook").Create(&corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: "snapshot-webhook",
+				Name:      "snapshot-webhook",
 				Namespace: "snapshot-webhook",
 			},
 			Data: map[string][]byte{
-				"key.pem": []byte(b64.StdEncoding.EncodeToString(privateKey)),
+				"key.pem":  []byte(b64.StdEncoding.EncodeToString(privateKey)),
 				"cert.pem": []byte(b64.StdEncoding.EncodeToString(cert)),
 			},
 		})
-		if err != nil && ! errors.IsAlreadyExists(err) {
+		if err != nil && !errors.IsAlreadyExists(err) {
 			log.Fatal(err)
 		}
 		log.Println("Generated new certificate and stored in Secret.")
@@ -207,7 +206,7 @@ func main() {
 
 	w := &WebhookServer{}
 	w.server = &http.Server{
-		Addr:      fmt.Sprintf(":%v", 8443),
+		Addr: fmt.Sprintf(":%v", 8443),
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{pair},
 		},
@@ -234,9 +233,9 @@ func createMutatingWebhookConfiguration(caCert []byte) *registrationv1beta1.Muta
 							registrationv1beta1.Create,
 						},
 						Rule: registrationv1beta1.Rule{
-							APIGroups: []string{""},
+							APIGroups:   []string{""},
 							APIVersions: []string{"v1"},
-							Resources: []string{"persistentvolumeclaims"},
+							Resources:   []string{"persistentvolumeclaims"},
 						},
 					},
 				},
@@ -244,7 +243,7 @@ func createMutatingWebhookConfiguration(caCert []byte) *registrationv1beta1.Muta
 				ClientConfig: registrationv1beta1.WebhookClientConfig{
 					Service: &registrationv1beta1.ServiceReference{
 						Namespace: "snapshot-webhook",
-						Name: "snapshot-webhook",
+						Name:      "snapshot-webhook",
 					},
 					CABundle: []byte(caCert),
 				},
@@ -253,7 +252,7 @@ func createMutatingWebhookConfiguration(caCert []byte) *registrationv1beta1.Muta
 	}
 }
 
-func createPatch(pvc corev1.PersistentVolumeClaim) ([]byte, error) {	
+func createPatch(pvc corev1.PersistentVolumeClaim) ([]byte, error) {
 	annotations := pvc.ObjectMeta.GetAnnotations()
 	if annotations == nil {
 		annotations = map[string]string{}
@@ -265,12 +264,12 @@ func createPatch(pvc corev1.PersistentVolumeClaim) ([]byte, error) {
 		apiGroup := "snapshot.storage.k8s.io"
 
 		patch = append(patch, patchOperation{
-			Op: "add",
+			Op:   "add",
 			Path: "/spec/dataSource",
 			Value: &corev1.TypedLocalObjectReference{
 				APIGroup: &apiGroup,
-				Kind: "VolumeSnapshot",
-				Name: annotations[annotationKey],
+				Kind:     "VolumeSnapshot",
+				Name:     annotations[annotationKey],
 			},
 		})
 	}
@@ -283,8 +282,8 @@ func (ws *WebhookServer) mutate(ar *v1beta1.AdmissionReview) *v1beta1.AdmissionR
 	req := ar.Request
 	var pvc corev1.PersistentVolumeClaim
 	if err := json.Unmarshal(req.Object.Raw, &pvc); err != nil {
-		return &v1beta1.AdmissionResponse {
-			Result: &metav1.Status {
+		return &v1beta1.AdmissionResponse{
+			Result: &metav1.Status{
 				Message: err.Error(),
 			},
 		}
@@ -292,18 +291,18 @@ func (ws *WebhookServer) mutate(ar *v1beta1.AdmissionReview) *v1beta1.AdmissionR
 
 	log.Printf("AdmissionReview for Kind=%v, Namespace=%v Name=%v (%v) UID=%v patchOperation=%v UserInfo=%v",
 		req.Kind, req.Namespace, req.Name, pvc.Name, req.UID, req.Operation, req.UserInfo)
-	
+
 	patchBytes, err := createPatch(pvc)
 	if err != nil {
-		return &v1beta1.AdmissionResponse {
-			Result: &metav1.Status {
+		return &v1beta1.AdmissionResponse{
+			Result: &metav1.Status{
 				Message: err.Error(),
 			},
 		}
 	}
-	
+
 	log.Printf("AdmissionResponse: patch=%v\n", string(patchBytes))
-	return &v1beta1.AdmissionResponse {
+	return &v1beta1.AdmissionResponse{
 		Allowed: true,
 		Patch:   patchBytes,
 		PatchType: func() *v1beta1.PatchType {
@@ -321,7 +320,7 @@ func (ws *WebhookServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	err := json.NewDecoder(r.Body).Decode(&ar)
 	if err != nil {
 		admissionResponse = &v1beta1.AdmissionResponse{
-			Result: &metav1.Status {
+			Result: &metav1.Status{
 				Message: err.Error(),
 			},
 		}

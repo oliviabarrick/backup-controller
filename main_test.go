@@ -2,11 +2,11 @@ package main
 
 import (
 	"encoding/json"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"gopkg.in/evanphx/json-patch.v4"
-	"k8s.io/apimachinery/pkg/api/resource"
 	"github.com/stretchr/testify/assert"
+	"gopkg.in/evanphx/json-patch.v4"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"testing"
 )
 
@@ -15,7 +15,7 @@ func createPvc() corev1.PersistentVolumeClaim {
 
 	return corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "hello",
+			Name:        "hello",
 			Annotations: map[string]string{},
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{

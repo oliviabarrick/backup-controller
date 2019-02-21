@@ -1,0 +1,83 @@
+apiVersion: admissionregistration.k8s.io/v1beta1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: snapshot-webhook
+webhooks:
+- name: snapshot-webhook.codesink.net
+  rules:
+  - apiGroups:
+    - ""
+    apiVersions:
+    - v1
+    operations:
+    - CREATE
+    resources:
+    - persistentvolumeclaims
+  clientConfig:
+    service:
+      namespace: snapshot-webhook
+      name: snapshot-webhook
+---
+apiVersion: apps/v1beta1
+kind: Deployment
+metadata:
+  name: snapshot-webhook
+  namespace: snapshot-webhook
+  labels:
+    app: snapshot-webhook
+spec:
+  selector:
+    matchLabels:
+      app: snapshot-webhook
+  template:
+    metadata:
+      labels:
+        app: snapshot-webhook
+    spec:
+      containers:
+      - image: justinbarrick/snapshot-webhook
+        imagePullPolicy: Always
+        name: snapshot-webhook
+        env:
+        - name: TLS_KEY_FILE
+          value: "/ssl/key.pem"
+        - name: TLS_CERT_FILE
+          value: "/ssl/cert.pem"
+        volumeMounts:
+        - mountPath: /ssl/
+          name: cert
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 443
+            scheme: HTTPS
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 443
+            scheme: HTTPS
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          limits:
+            memory: "512Mi"
+            cpu: "100m"
+          requests:
+            memory: "256Mi"
+            cpu: "50m"
+      volumes:
+        - name: cert
+          secret:
+            secretName: snapshot-webhook
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: snapshot-webhook
+  namespace: snapshot-webhook
+spec:
+  ports:
+    - port: 443
+      targetPort: 443
+  selector:
+    app: snapshot-webhook

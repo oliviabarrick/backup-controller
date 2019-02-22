@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 	"context"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	corev1 "k8s.io/api/core/v1"
 	snapshots "github.com/kubernetes-csi/external-snapshotter/pkg/apis/volumesnapshot/v1alpha1"
 	admissionregistrationv1beta1 "k8s.io/api/admissionregistration/v1beta1"
@@ -25,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission/builder"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission/types"
+	"github.com/google/uuid"
 )
 
 const (
@@ -33,20 +35,42 @@ const (
 	webhookName      = "snapshot-webhook"
 )
 
-// Create a new VolumeSnapshot for a PVC.
-func takeBackup(backup BackupSchedule) func() {
-	return func() {
-		log.Printf("It is time for a backup of %s!", backup.name)
-	}
-}
-
 // Represents the backup schedule for a single PVC and invokes a timer accordingly.
 type BackupSchedule struct {
 	name string
+	namespace string
 	volumeCreated time.Time
 	latest time.Time
 	interval *time.Duration
 	timer *time.Timer
+	client client.Client
+}
+
+// Create a new VolumeSnapshot for a PVC.
+func (b *BackupSchedule) Backup() {
+	log.Printf("It is time for a backup of %s!", b.name)
+
+	randId, err := uuid.NewRandom()
+	if err != nil {
+		log.Println("random error", err)
+		return
+	}
+
+	err = b.client.Create(context.TODO(), &snapshots.VolumeSnapshot{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: fmt.Sprintf("%s-%s", b.name, randId.String()),
+			Namespace: b.namespace,
+		},
+		Spec: snapshots.VolumeSnapshotSpec{
+			Source: &corev1.TypedLocalObjectReference{
+				Kind: "PersistentVolumeClaim",
+				Name: b.name,
+			},
+		},
+	})
+	if err != nil {
+		log.Println("error creating VolumeSnapshot.")
+	}
 }
 
 // Schedule a backup for a PVC.
@@ -67,7 +91,7 @@ func (b *BackupSchedule) Schedule() {
 
 	nextBackup := checkTime.Add(*b.interval).Sub(time.Now())
 
-	b.timer = time.AfterFunc(nextBackup, takeBackup(*b))
+	b.timer = time.AfterFunc(nextBackup, b.Backup)
 
 	log.Printf("Backup for %s scheduled for %s", b.name, nextBackup)
 }
@@ -105,10 +129,11 @@ func (b *BackupSchedule) SetInterval(pvc *corev1.PersistentVolumeClaim) error {
 type Backups struct {
 	backups map[string]*BackupSchedule
 	lock sync.Mutex
+	client client.Client
 }
 
 // Retrieve a BackupSchedule by key. If it does not exist, it will be initialized.
-func (b *Backups) Get(key string) *BackupSchedule {
+func (b *Backups) Get(namespace, name string) *BackupSchedule {
 	b.lock.Lock()
 	defer b.lock.Unlock()
 
@@ -116,8 +141,14 @@ func (b *Backups) Get(key string) *BackupSchedule {
 		b.backups = map[string]*BackupSchedule{}
 	}
 
+	key := fmt.Sprintf("%s/%s", namespace, name)
+
 	if b.backups[key] == nil {
-		b.backups[key] = &BackupSchedule{name: key}
+		b.backups[key] = &BackupSchedule{
+			name: name,
+			namespace: namespace,
+			client: b.client,
+		}
 	}
 
 	return b.backups[key]
@@ -126,7 +157,7 @@ func (b *Backups) Get(key string) *BackupSchedule {
 // Reconciler for reacting to VolumeSnapshot events.
 type ReconcileVolumeSnapshots struct {
 	client client.Client
-	backups Backups
+	backups *Backups
 }
 
 // Reconcile VolumeSnapshot events by updating the backups map with known snapshots.
@@ -144,7 +175,7 @@ func (r *ReconcileVolumeSnapshots) Reconcile(request reconcile.Request) (reconci
 		return reconcile.Result{}, err
 	}
 
-	backup := r.backups.Get(fmt.Sprintf("%s/%s", snapshot.GetNamespace(), snapshot.Spec.Source.Name))
+	backup := r.backups.Get(snapshot.GetNamespace(), snapshot.Spec.Source.Name)
 	backup.SetLatest(snapshot.ObjectMeta.CreationTimestamp.Time)
 	backup.Schedule()
 
@@ -154,7 +185,7 @@ func (r *ReconcileVolumeSnapshots) Reconcile(request reconcile.Request) (reconci
 // Reconciler for reacting to PersistentVolumeClaim events.
 type ReconcilePersistentVolumeClaims struct {
 	client client.Client
-	backups Backups
+	backups *Backups
 }
 
 // Reconcile PersistentVolumeClaims by updating the backups map with information about the PVC.
@@ -172,7 +203,7 @@ func (r *ReconcilePersistentVolumeClaims) Reconcile(request reconcile.Request) (
 		return reconcile.Result{}, err
 	}
 
-	backup := r.backups.Get(request.NamespacedName.String())
+	backup := r.backups.Get(pvc.GetNamespace(), pvc.GetName())
 	backup.SetInterval(pvc)
 	backup.Schedule()
 
@@ -241,7 +272,7 @@ func main() {
 		log.Fatal("cannot create manager:", err)
 	}
 
-	backups := Backups{}
+	backups := &Backups{client: mgr.GetClient()}
 
 	snapshotController, err := controller.New("snapshot-controller", mgr, controller.Options{
 		Reconciler: &ReconcileVolumeSnapshots{client: mgr.GetClient(), backups: backups},

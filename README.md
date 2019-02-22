@@ -6,6 +6,14 @@ period, and whether or not you want to automatically set the PersistentVolumeCla
 use the latest snapshot when it is created. This ensures a painless and error free
 workflow for managing backups of stateful services in Kubernetes.
 
+# Installation
+
+To install, deploy the manifest:
+
+```
+kubectl apply -f deploy.yaml
+```
+
 # Usage
 
 To use, set the following annotations on any PersistentVolumeClaim that should be
@@ -54,10 +62,6 @@ csi-do-test-pvc-eb9d99af-95cc-4fc2-a0af-70fe29b02729   6s
 ➜  ~ 
 ```
 
-If a `dataSource` is set on a PersistentVolumeClaim, the PersistentVolumeClaim is loaded from a snapshot managed by the CSI provisioner. Currently,
-the `dataSource` setting on PersistentVolumeClaims is immutable, which means that the `dataSource` setting on a PersistentVolumeClaim will either be
-empty (a new PVC) or the original snapshot that the PVC was created from.
-
 Because `restore-latest` is set, if the PersistentVolumeClaim is deleted and recreated
 it will automatically have the `dataSource` field set to the most recently created
 snapshot:
@@ -87,6 +91,12 @@ spec:
 This feature ensures that your PersistentVolumeClaims can always be restored from the
 most recent snapshot without any modification to the manifest (e.g., the latest
 snapshot id does not have to be present).
+
+Without backup-controller, in order to restore a PersistentVolumeClaim to a snapshot it
+must first be deleted and then be recreated with the `dataSource` field set to the VolumeSnapshot
+to restore from. backup-controller ensures portable configuration by automatically setting the
+`dataSource` on PersistentVolumeClaims to the most recent backup using an Mutating Admission
+Controller.
 
 Combined with [Flux](https://github.com/weaveworks/flux) any PersistentVolumeClaim
 that is deleted will automatically be restored from the most recent snapshot.

@@ -12,8 +12,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"log"
 	"net/http"
-	//"github.com/davecgh/go-spew/spew"
 	"k8s.io/apimachinery/pkg/api/errors"
+	apitypes "k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -36,18 +36,20 @@ const (
 )
 
 // Represents the backup schedule for a single PVC and invokes a timer accordingly.
-type BackupSchedule struct {
+type BackupController struct {
 	name string
 	namespace string
 	volumeCreated time.Time
 	latest time.Time
+	latestId string
 	interval *time.Duration
+	retentionPeriod *time.Duration
 	timer *time.Timer
 	client client.Client
 }
 
 // Create a new VolumeSnapshot for a PVC.
-func (b *BackupSchedule) Backup() {
+func (b *BackupController) Backup() {
 	log.Printf("It is time for a backup of %s!", b.name)
 
 	randId, err := uuid.NewRandom()
@@ -69,12 +71,49 @@ func (b *BackupSchedule) Backup() {
 		},
 	})
 	if err != nil {
-		log.Println("error creating VolumeSnapshot.")
+		log.Println("error creating VolumeSnapshot:", err)
+		return
+	}
+
+	if err := b.GarbageCollectSnapshots(); err != nil {
+		log.Println("error garbage collecting snapshots:", err)
+		return
 	}
 }
 
+// Delete any snapshots older than the retention period specified.
+func (b *BackupController) GarbageCollectSnapshots() error {
+	if b.retentionPeriod == nil {
+		return nil
+	}
+
+	allSnapshots := &snapshots.VolumeSnapshotList{}
+
+	err := b.client.List(context.TODO(), &client.ListOptions{
+		Namespace: b.namespace,
+	}, allSnapshots)
+	if err != nil {
+		return err
+	}
+
+	for _, snapshot := range allSnapshots.Items {
+		snapExpiry := snapshot.ObjectMeta.CreationTimestamp.Time.Add(*b.retentionPeriod)
+
+		if time.Now().Sub(snapExpiry).Seconds() < 0 {
+			continue
+		}
+
+		err = b.client.Delete(context.TODO(), &snapshot)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // Schedule a backup for a PVC.
-func (b *BackupSchedule) Schedule() {
+func (b *BackupController) Schedule() {
 	if b.interval == nil {
 		return
 	}
@@ -97,18 +136,24 @@ func (b *BackupSchedule) Schedule() {
 }
 
 // If t is more recent than the current latest, set latest to t.
-func (b *BackupSchedule) SetLatest(t time.Time) {
+func (b *BackupController) SetLatest(t time.Time, snapshotId string) bool {
 	if b.latest == (time.Time{}) {
 		b.latest = t
+		b.latestId = snapshotId
+		return true
 	}
 
 	if t.Sub(b.latest).Seconds() > 0 {
 		b.latest = t
+		b.latestId = snapshotId
+		return true
 	}
+
+	return false
 }
 
 // Set the interval and volumeCreated settings from the PVC.
-func (b *BackupSchedule) SetInterval(pvc *corev1.PersistentVolumeClaim) error {
+func (b *BackupController) SetPersistentVolumeClaim(pvc *corev1.PersistentVolumeClaim) error {
 	b.volumeCreated = pvc.ObjectMeta.CreationTimestamp.Time
 
 	annotations := pvc.GetAnnotations()
@@ -122,29 +167,40 @@ func (b *BackupSchedule) SetInterval(pvc *corev1.PersistentVolumeClaim) error {
 	}
 
 	b.interval = &snapshotFrequency
+
+	if annotations["snapshot-retention"] == "" {
+		return nil
+	}
+
+	snapshotRetention, err := time.ParseDuration(annotations["snapshot-retention"])
+	if err != nil {
+		return err
+	}
+
+	b.retentionPeriod = &snapshotRetention
 	return nil
 }
 
-// A map and lock for controlling access to BackupSchedules.
-type Backups struct {
-	backups map[string]*BackupSchedule
+// A map and lock for controlling access to BackupControllers.
+type BackupManager struct {
+	backups map[string]*BackupController
 	lock sync.Mutex
 	client client.Client
 }
 
-// Retrieve a BackupSchedule by key. If it does not exist, it will be initialized.
-func (b *Backups) Get(namespace, name string) *BackupSchedule {
+// Retrieve a BackupController by key. If it does not exist, it will be initialized.
+func (b *BackupManager) Get(namespace, name string) *BackupController {
 	b.lock.Lock()
 	defer b.lock.Unlock()
 
 	if b.backups == nil {
-		b.backups = map[string]*BackupSchedule{}
+		b.backups = map[string]*BackupController{}
 	}
 
 	key := fmt.Sprintf("%s/%s", namespace, name)
 
 	if b.backups[key] == nil {
-		b.backups[key] = &BackupSchedule{
+		b.backups[key] = &BackupController{
 			name: name,
 			namespace: namespace,
 			client: b.client,
@@ -157,7 +213,7 @@ func (b *Backups) Get(namespace, name string) *BackupSchedule {
 // Reconciler for reacting to VolumeSnapshot events.
 type ReconcileVolumeSnapshots struct {
 	client client.Client
-	backups *Backups
+	backups *BackupManager
 }
 
 // Reconcile VolumeSnapshot events by updating the backups map with known snapshots.
@@ -176,8 +232,34 @@ func (r *ReconcileVolumeSnapshots) Reconcile(request reconcile.Request) (reconci
 	}
 
 	backup := r.backups.Get(snapshot.GetNamespace(), snapshot.Spec.Source.Name)
-	backup.SetLatest(snapshot.ObjectMeta.CreationTimestamp.Time)
+	isLatest := backup.SetLatest(snapshot.ObjectMeta.CreationTimestamp.Time, snapshot.GetName())
 	backup.Schedule()
+
+	if isLatest {
+		pvc := &corev1.PersistentVolumeClaim{}
+		if err := r.client.Get(context.TODO(), apitypes.NamespacedName{
+			Name: snapshot.Spec.Source.Name,
+			Namespace: snapshot.GetNamespace(),
+		}, pvc); err != nil {
+			if errors.IsNotFound(err) {
+				return reconcile.Result{}, nil
+			}
+
+			return reconcile.Result{}, err
+		}
+
+		if pvc.ObjectMeta.Annotations == nil {
+			return reconcile.Result{}, nil
+		}
+
+		pvc.ObjectMeta.Annotations[annotationKey] = snapshot.GetName()
+
+		log.Println("Updating latest-snapshot annotation.")
+
+		if err := r.client.Update(context.TODO(), pvc); err != nil {
+			return reconcile.Result{}, err
+		}
+	}
 
 	return reconcile.Result{}, nil
 }
@@ -185,7 +267,7 @@ func (r *ReconcileVolumeSnapshots) Reconcile(request reconcile.Request) (reconci
 // Reconciler for reacting to PersistentVolumeClaim events.
 type ReconcilePersistentVolumeClaims struct {
 	client client.Client
-	backups *Backups
+	backups *BackupManager
 }
 
 // Reconcile PersistentVolumeClaims by updating the backups map with information about the PVC.
@@ -204,7 +286,7 @@ func (r *ReconcilePersistentVolumeClaims) Reconcile(request reconcile.Request) (
 	}
 
 	backup := r.backups.Get(pvc.GetNamespace(), pvc.GetName())
-	backup.SetInterval(pvc)
+	backup.SetPersistentVolumeClaim(pvc)
 	backup.Schedule()
 
 	return reconcile.Result{}, nil
@@ -272,7 +354,7 @@ func main() {
 		log.Fatal("cannot create manager:", err)
 	}
 
-	backups := &Backups{client: mgr.GetClient()}
+	backups := &BackupManager{client: mgr.GetClient()}
 
 	snapshotController, err := controller.New("snapshot-controller", mgr, controller.Options{
 		Reconciler: &ReconcileVolumeSnapshots{client: mgr.GetClient(), backups: backups},

@@ -1,19 +1,18 @@
 package main
 
 import (
-	"sync"
-	"fmt"
-	"time"
 	"context"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	corev1 "k8s.io/api/core/v1"
+	"fmt"
+	"github.com/google/uuid"
 	snapshots "github.com/kubernetes-csi/external-snapshotter/pkg/apis/volumesnapshot/v1alpha1"
 	admissionregistrationv1beta1 "k8s.io/api/admissionregistration/v1beta1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	apitypes "k8s.io/apimachinery/pkg/types"
 	"log"
 	"net/http"
-	"k8s.io/apimachinery/pkg/api/errors"
-	apitypes "k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -26,7 +25,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission/builder"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission/types"
-	"github.com/google/uuid"
+	"sync"
+	"time"
 )
 
 const (
@@ -37,15 +37,15 @@ const (
 
 // Represents the backup schedule for a single PVC and invokes a timer accordingly.
 type BackupController struct {
-	name string
-	namespace string
-	volumeCreated time.Time
-	latest time.Time
-	latestId string
-	interval *time.Duration
+	name            string
+	namespace       string
+	volumeCreated   time.Time
+	latest          time.Time
+	latestId        string
+	interval        *time.Duration
 	retentionPeriod *time.Duration
-	timer *time.Timer
-	client client.Client
+	timer           *time.Timer
+	client          client.Client
 }
 
 // Create a new VolumeSnapshot for a PVC.
@@ -60,7 +60,7 @@ func (b *BackupController) Backup() {
 
 	err = b.client.Create(context.TODO(), &snapshots.VolumeSnapshot{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: fmt.Sprintf("%s-%s", b.name, randId.String()),
+			Name:      fmt.Sprintf("%s-%s", b.name, randId.String()),
 			Namespace: b.namespace,
 		},
 		Spec: snapshots.VolumeSnapshotSpec{
@@ -184,8 +184,8 @@ func (b *BackupController) SetPersistentVolumeClaim(pvc *corev1.PersistentVolume
 // A map and lock for controlling access to BackupControllers.
 type BackupManager struct {
 	backups map[string]*BackupController
-	lock sync.Mutex
-	client client.Client
+	lock    sync.Mutex
+	client  client.Client
 }
 
 // Retrieve a BackupController by key. If it does not exist, it will be initialized.
@@ -201,9 +201,9 @@ func (b *BackupManager) Get(namespace, name string) *BackupController {
 
 	if b.backups[key] == nil {
 		b.backups[key] = &BackupController{
-			name: name,
+			name:      name,
 			namespace: namespace,
-			client: b.client,
+			client:    b.client,
 		}
 	}
 
@@ -212,7 +212,7 @@ func (b *BackupManager) Get(namespace, name string) *BackupController {
 
 // Reconciler for reacting to VolumeSnapshot events.
 type ReconcileVolumeSnapshots struct {
-	client client.Client
+	client  client.Client
 	backups *BackupManager
 }
 
@@ -238,7 +238,7 @@ func (r *ReconcileVolumeSnapshots) Reconcile(request reconcile.Request) (reconci
 	if isLatest {
 		pvc := &corev1.PersistentVolumeClaim{}
 		if err := r.client.Get(context.TODO(), apitypes.NamespacedName{
-			Name: snapshot.Spec.Source.Name,
+			Name:      snapshot.Spec.Source.Name,
 			Namespace: snapshot.GetNamespace(),
 		}, pvc); err != nil {
 			if errors.IsNotFound(err) {
@@ -266,7 +266,7 @@ func (r *ReconcileVolumeSnapshots) Reconcile(request reconcile.Request) (reconci
 
 // Reconciler for reacting to PersistentVolumeClaim events.
 type ReconcilePersistentVolumeClaims struct {
-	client client.Client
+	client  client.Client
 	backups *BackupManager
 }
 

@@ -1,14 +1,14 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: snapshot-webhook
-  namespace: snapshot-webhook
+  name: backup-controller
+  namespace: backup-controller
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: snapshot-webhook
-  namespace: snapshot-webhook
+  name: backup-controller
+  namespace: backup-controller
 rules:
 - apiGroups: [""]
   resources: ["secrets", "services"]
@@ -17,7 +17,7 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: snapshot-webhook
+  name: backup-controller
 rules:
 - apiGroups: ["certificates.k8s.io"]
   resources: ["certificatesigningrequests"]
@@ -35,52 +35,52 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: snapshot-webhook
-  namespace: snapshot-webhook
+  name: backup-controller
+  namespace: backup-controller
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: snapshot-webhook
+  name: backup-controller
 subjects:
 - apiGroup: ""
   kind: ServiceAccount
-  name: snapshot-webhook
+  name: backup-controller
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: snapshot-webhook
+  name: backup-controller
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: snapshot-webhook
+  name: backup-controller
 subjects:
 - apiGroup: ""
   kind: ServiceAccount
-  name: snapshot-webhook
-  namespace: snapshot-webhook
+  name: backup-controller
+  namespace: backup-controller
 ---
 apiVersion: apps/v1beta1
 kind: Deployment
 metadata:
-  name: snapshot-webhook
-  namespace: snapshot-webhook
+  name: backup-controller
+  namespace: backup-controller
   labels:
-    app: snapshot-webhook
+    app: backup-controller
 spec:
   selector:
     matchLabels:
-      app: snapshot-webhook
+      app: backup-controller
   template:
     metadata:
       labels:
-        app: snapshot-webhook
+        app: backup-controller
     spec:
-      serviceAccountName: snapshot-webhook
+      serviceAccountName: backup-controller
       containers:
       - image: justinbarrick/snapshot-admission-controller
         imagePullPolicy: Always
-        name: snapshot-webhook
+        name: backup-controller
         livenessProbe:
           httpGet:
             path: /mutate

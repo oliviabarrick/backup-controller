@@ -1,5 +1,5 @@
 FROM scratch
 
-COPY ./snapshot-webhook /snapshot-webhook
+COPY ./backup-controller /backup-controller
 
-ENTRYPOINT ["/snapshot-webhook"]
+ENTRYPOINT ["/backup-controller"]

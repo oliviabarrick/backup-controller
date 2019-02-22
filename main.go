@@ -1,16 +1,16 @@
 package main
 
 import (
-	"github.com/justinbarrick/snapshot-webhook/pkg/reconcilers/pvc"
-	"github.com/justinbarrick/snapshot-webhook/pkg/reconcilers/snapshot"
-	"github.com/justinbarrick/snapshot-webhook/pkg/runtime"
-	latest "github.com/justinbarrick/snapshot-webhook/pkg/webhooks/snapshot"
+	"github.com/justinbarrick/backup-controller/pkg/reconcilers/pvc"
+	"github.com/justinbarrick/backup-controller/pkg/reconcilers/snapshot"
+	"github.com/justinbarrick/backup-controller/pkg/runtime"
+	latest "github.com/justinbarrick/backup-controller/pkg/webhooks/snapshot"
 	"log"
 )
 
 const (
-	webhookNamespace = "snapshot-webhook"
-	webhookName      = "snapshot-webhook"
+	webhookNamespace = "backup-controller"
+	webhookName      = "backup-controller"
 )
 
 func main() {

@@ -2,7 +2,7 @@ package snapshot
 
 import (
 	"context"
-	"github.com/justinbarrick/snapshot-webhook/pkg/runtime"
+	"github.com/justinbarrick/backup-controller/pkg/runtime"
 	corev1 "k8s.io/api/core/v1"
 	"log"
 	"net/http"

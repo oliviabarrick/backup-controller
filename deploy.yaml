@@ -11,8 +11,8 @@ metadata:
   namespace: snapshot-webhook
 rules:
 - apiGroups: [""]
-  resources: ["secrets"]
-  verbs: ["get", "create"]
+  resources: ["secrets", "services"]
+  verbs: ["get", "create", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -24,7 +24,13 @@ rules:
   verbs: ["get", "list", "create", "watch"]
 - apiGroups: ["admissionregistration.k8s.io"]
   resources: ["mutatingwebhookconfigurations"]
-  verbs: ["create", "get", "update"]
+  verbs: ["create", "get", "update", "list", "watch"]
+- apiGroups: [""]
+  resources: ["persistentvolumeclaims", "services"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["snapshot.storage.k8s.io"]
+  resources: ["volumesnapshots"]
+  verbs: ["get", "list", "create", "watch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -77,12 +83,12 @@ spec:
         name: snapshot-webhook
         livenessProbe:
           httpGet:
-            path: /
+            path: /mutate
             port: 8443
             scheme: HTTPS
         readinessProbe:
           httpGet:
-            path: /
+            path: /mutate
             port: 8443
             scheme: HTTPS
           initialDelaySeconds: 5
@@ -94,15 +100,3 @@ spec:
           requests:
             memory: "256Mi"
             cpu: "50m"
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: snapshot-webhook
-  namespace: snapshot-webhook
-spec:
-  ports:
-    - port: 443
-      targetPort: 8443
-  selector:
-    app: snapshot-webhook

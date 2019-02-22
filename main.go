@@ -10,7 +10,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	apitypes "k8s.io/apimachinery/pkg/types"
 	"log"
 	"net/http"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -30,7 +29,7 @@ import (
 )
 
 const (
-	annotationKey    = "latest-snapshot"
+	annotationKey    = "restore-latest"
 	webhookNamespace = "snapshot-webhook"
 	webhookName      = "snapshot-webhook"
 )
@@ -152,6 +151,11 @@ func (b *BackupController) SetLatest(t time.Time, snapshotId string) bool {
 	return false
 }
 
+// If t is more recent than the current latest, set latest to t.
+func (b *BackupController) GetLatest() string {
+	return b.latestId
+}
+
 // Set the interval and volumeCreated settings from the PVC.
 func (b *BackupController) SetPersistentVolumeClaim(pvc *corev1.PersistentVolumeClaim) error {
 	b.volumeCreated = pvc.ObjectMeta.CreationTimestamp.Time
@@ -232,34 +236,8 @@ func (r *ReconcileVolumeSnapshots) Reconcile(request reconcile.Request) (reconci
 	}
 
 	backup := r.backups.Get(snapshot.GetNamespace(), snapshot.Spec.Source.Name)
-	isLatest := backup.SetLatest(snapshot.ObjectMeta.CreationTimestamp.Time, snapshot.GetName())
+	backup.SetLatest(snapshot.ObjectMeta.CreationTimestamp.Time, snapshot.GetName())
 	backup.Schedule()
-
-	if isLatest {
-		pvc := &corev1.PersistentVolumeClaim{}
-		if err := r.client.Get(context.TODO(), apitypes.NamespacedName{
-			Name:      snapshot.Spec.Source.Name,
-			Namespace: snapshot.GetNamespace(),
-		}, pvc); err != nil {
-			if errors.IsNotFound(err) {
-				return reconcile.Result{}, nil
-			}
-
-			return reconcile.Result{}, err
-		}
-
-		if pvc.ObjectMeta.Annotations == nil {
-			return reconcile.Result{}, nil
-		}
-
-		pvc.ObjectMeta.Annotations[annotationKey] = snapshot.GetName()
-
-		log.Println("Updating latest-snapshot annotation.")
-
-		if err := r.client.Update(context.TODO(), pvc); err != nil {
-			return reconcile.Result{}, err
-		}
-	}
 
 	return reconcile.Result{}, nil
 }
@@ -296,6 +274,7 @@ func (r *ReconcilePersistentVolumeClaims) Reconcile(request reconcile.Request) (
 type LatestSnapshotMutator struct {
 	client  client.Client
 	decoder types.Decoder
+	backups *BackupManager
 }
 
 // Implement InjectClient
@@ -317,12 +296,20 @@ func (v *LatestSnapshotMutator) MutatePvc(pvc *corev1.PersistentVolumeClaim) {
 		return
 	}
 
+	backup := v.backups.Get(pvc.GetNamespace(), pvc.GetName())
+	if backup.GetLatest() == "" {
+		log.Println("Not restoring PVC, no latest backup.")
+		return
+	}
+
+	log.Println("Restoring PVC from", backup.GetLatest())
+
 	apiGroup := "snapshot.storage.k8s.io"
 
 	pvc.Spec.DataSource = &corev1.TypedLocalObjectReference{
 		APIGroup: &apiGroup,
 		Kind:     "VolumeSnapshot",
-		Name:     annotations[annotationKey],
+		Name:     backup.GetLatest(),
 	}
 }
 
@@ -380,16 +367,28 @@ func main() {
 
 	mutatingWebhook, err := builder.NewWebhookBuilder().
 		Mutating().
-		WithManager(mgr).
 		Path("/mutate").
+		Name(fmt.Sprintf("%s.codesink.net", webhookName)).
 		ForType(&corev1.PersistentVolumeClaim{}).
-		Handlers(&LatestSnapshotMutator{}).
+		FailurePolicy(admissionregistrationv1beta1.Fail).
+		Operations(admissionregistrationv1beta1.Create).
+		Handlers(&LatestSnapshotMutator{backups: backups}).
+		WithManager(mgr).
 		Build()
 	if err != nil {
 		log.Fatal("cannot create webhook:", err)
 	}
 
 	as, err := webhook.NewServer(webhookName, mgr, webhook.ServerOptions{
+		BootstrapOptions: &webhook.BootstrapOptions{
+			Service: &webhook.Service{
+				Name:      webhookName,
+				Namespace: webhookNamespace,
+				Selectors: map[string]string{
+					"app": webhookName,
+				},
+			},
+		},
 		Port:    8443,
 		CertDir: "/tmp/cert",
 	})

@@ -343,28 +343,6 @@ func main() {
 
 	backups := &BackupManager{client: mgr.GetClient()}
 
-	snapshotController, err := controller.New("snapshot-controller", mgr, controller.Options{
-		Reconciler: &ReconcileVolumeSnapshots{client: mgr.GetClient(), backups: backups},
-	})
-	if err != nil {
-		log.Fatal("cannot create snapshot controller:", err)
-	}
-
-	if err := snapshotController.Watch(&source.Kind{Type: &snapshots.VolumeSnapshot{}}, &handler.EnqueueRequestForObject{}); err != nil {
-		log.Fatal("cannot watch VolumeSnapshots:", err)
-	}
-
-	pvcController, err := controller.New("pvc-controller", mgr, controller.Options{
-		Reconciler: &ReconcilePersistentVolumeClaims{client: mgr.GetClient(), backups: backups},
-	})
-	if err != nil {
-		log.Fatal("cannot create PVC controller:", err)
-	}
-
-	if err := pvcController.Watch(&source.Kind{Type: &corev1.PersistentVolumeClaim{}}, &handler.EnqueueRequestForObject{}); err != nil {
-		log.Fatal("cannot watch PVCs:", err)
-	}
-
 	mutatingWebhook, err := builder.NewWebhookBuilder().
 		Mutating().
 		Path("/mutate").
@@ -398,6 +376,38 @@ func main() {
 
 	if err := as.Register(mutatingWebhook); err != nil {
 		log.Fatal("cannot register webhook", err)
+	}
+
+	snapshotController, err := controller.New("snapshot-controller", mgr, controller.Options{
+		Reconciler: &ReconcileVolumeSnapshots{
+			client:  mgr.GetClient(),
+			backups: backups,
+		},
+	})
+	if err != nil {
+		log.Fatal("cannot create snapshot controller:", err)
+	}
+
+	if err := snapshotController.Watch(&source.Kind{
+		Type: &snapshots.VolumeSnapshot{},
+	}, &handler.EnqueueRequestForObject{}); err != nil {
+		log.Fatal("cannot watch VolumeSnapshots:", err)
+	}
+
+	pvcController, err := controller.New("pvc-controller", mgr, controller.Options{
+		Reconciler: &ReconcilePersistentVolumeClaims{
+			client:  mgr.GetClient(),
+			backups: backups,
+		},
+	})
+	if err != nil {
+		log.Fatal("cannot create PVC controller:", err)
+	}
+
+	if err := pvcController.Watch(&source.Kind{
+		Type: &corev1.PersistentVolumeClaim{},
+	}, &handler.EnqueueRequestForObject{}); err != nil {
+		log.Fatal("cannot watch PVCs:", err)
 	}
 
 	if err := mgr.Start(signals.SetupSignalHandler()); err != nil {

@@ -1,26 +1,3 @@
-apiVersion: admissionregistration.k8s.io/v1beta1
-kind: MutatingWebhookConfiguration
-metadata:
-  name: snapshot-webhook
-webhooks:
-- name: snapshot-webhook.codesink.net
-  rules:
-  - apiGroups:
-    - ""
-    apiVersions:
-    - v1
-    operations:
-    - CREATE
-    resources:
-    - persistentvolumeclaims
-  failurePolicy: Fail
-  clientConfig:
-    service:
-      namespace: snapshot-webhook
-      name: snapshot-webhook
-    # Set to not-null. Will be fixed by the snapshot-webhook when it initalizes.
-    caBundle: bm90bnVsbA==
----
 apiVersion: v1
 kind: ServiceAccount
 metadata:

@@ -78,7 +78,7 @@ spec:
     spec:
       serviceAccountName: backup-controller
       containers:
-      - image: justinbarrick/snapshot-admission-controller
+      - image: justinbarrick/backup-controller
         imagePullPolicy: Always
         name: backup-controller
         livenessProbe:

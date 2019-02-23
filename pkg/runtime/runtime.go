@@ -24,13 +24,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission/types"
 )
 
+// Interface that must be implemented by a reconciler.
 type Reconciler interface {
 	SetClient(client.Client)
 	SetRuntime(*Runtime)
-	GetType() runtime.Object
+	GetType() []runtime.Object
 	Reconcile(request reconcile.Request) (reconcile.Result, error)
 }
 
+// Interface that must be implemented by a webhook.
 type Webhook interface {
 	Handle(ctx context.Context, req types.Request) types.Response
 	InjectClient(c client.Client) error
@@ -38,7 +40,8 @@ type Webhook interface {
 	SetRuntime(*Runtime)
 }
 
-// A map and lock for controlling access to BackupControllers.
+// An object that contains information about all known PersistentVolumeClaims, a Kubernetes client,
+// and other globally useful resources.
 type Runtime struct {
 	Name      string
 	Namespace string
@@ -48,6 +51,7 @@ type Runtime struct {
 	client    client.Client
 }
 
+// Create a new runtime.
 func NewRuntime(name, namespace string) (*Runtime, error) {
 	scheme := runtime.NewScheme()
 	snapshots.AddToScheme(scheme)
@@ -69,6 +73,7 @@ func NewRuntime(name, namespace string) (*Runtime, error) {
 	}, nil
 }
 
+// Start the cnotroller.
 func (b *Runtime) Start() error {
 	return b.mgr.Start(signals.SetupSignalHandler())
 }
@@ -95,6 +100,7 @@ func (b *Runtime) Get(namespace, name string) *backup_controller.BackupControlle
 	return b.backups[key]
 }
 
+// Registers a new mutating webhook.
 func (b *Runtime) RegisterWebhook(handler Webhook) error {
 	handler.SetRuntime(b)
 
@@ -132,6 +138,7 @@ func (b *Runtime) RegisterWebhook(handler Webhook) error {
 	return as.Register(mutatingWebhook)
 }
 
+// Registers a new controller.
 func (b *Runtime) RegisterController(name string, reconciler Reconciler) error {
 	reconciler.SetRuntime(b)
 	reconciler.SetClient(b.GetClient())
@@ -143,11 +150,18 @@ func (b *Runtime) RegisterController(name string, reconciler Reconciler) error {
 		return err
 	}
 
-	return ctrlr.Watch(&source.Kind{
-		Type: reconciler.GetType(),
-	}, &handler.EnqueueRequestForObject{})
+	for _, kind := range reconciler.GetType() {
+		if err := ctrlr.Watch(&source.Kind{
+			Type: kind,
+		}, &handler.EnqueueRequestForObject{}); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
+// Return the Kubernetes client for the runtime.
 func (b *Runtime) GetClient() client.Client {
 	return b.mgr.GetClient()
 }

@@ -34,7 +34,7 @@ func (v *LatestSnapshotMutator) InjectDecoder(d types.Decoder) error {
 	return nil
 }
 
-// Set the DataSource on a persistent volume claim if the latest-snapshot key is present.
+// Set the DataSource on a persistent volume claim if the restore-latest key is present.
 func (v *LatestSnapshotMutator) MutatePvc(pvc *corev1.PersistentVolumeClaim) {
 	annotations := pvc.ObjectMeta.GetAnnotations()
 	if annotations == nil || annotations[annotationKey] == "" {
@@ -73,6 +73,7 @@ func (v *LatestSnapshotMutator) Handle(ctx context.Context, req types.Request) t
 	return admission.PatchResponse(pvc, newPvc)
 }
 
+// Set the backup-controller runtime for the webhook.
 func (v *LatestSnapshotMutator) SetRuntime(runtime *runtime.Runtime) {
 	v.runtime = runtime
 }

@@ -17,14 +17,17 @@ type Reconciler struct {
 	runtime *runtime.Runtime
 }
 
-func (r *Reconciler) GetType() runtimeObj.Object {
-	return &corev1.PersistentVolumeClaim{}
+// Returns the type that the reconciler watches.
+func (r *Reconciler) GetType() []runtimeObj.Object {
+	return []runtimeObj.Object{ &corev1.PersistentVolumeClaim{}, }
 }
 
+// Set the Kubernetes client.
 func (r *Reconciler) SetClient(client client.Client) {
 	r.client = client
 }
 
+// Set the backup-controller runtime.
 func (r *Reconciler) SetRuntime(runtime *runtime.Runtime) {
 	r.runtime = runtime
 }

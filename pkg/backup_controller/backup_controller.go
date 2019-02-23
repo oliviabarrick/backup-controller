@@ -12,7 +12,8 @@ import (
 	"time"
 )
 
-// Represents the backup schedule for a single PVC and invokes a timer accordingly.
+// Controls the backups for a single persistent volume claim. It keeps track of the latest snapshot,
+// when to expire snapshots, and when to take snaphots.
 type BackupController struct {
 	Name            string
 	Namespace       string
@@ -25,6 +26,7 @@ type BackupController struct {
 	client          client.Client
 }
 
+// Allow passing a Kubernetes client to the BackupController.
 func (b *BackupController) SetClient(client client.Client) {
 	b.client = client
 }
@@ -133,12 +135,12 @@ func (b *BackupController) SetLatest(t time.Time, snapshotId string) bool {
 	return false
 }
 
-// If t is more recent than the current latest, set latest to t.
+// Return the id of the latest snapshot.
 func (b *BackupController) GetLatest() string {
 	return b.latestId
 }
 
-// Set the interval and volumeCreated settings from the PVC.
+// Set the PersistentVolumeClaim that this BackupController is for.
 func (b *BackupController) SetPersistentVolumeClaim(pvc *corev1.PersistentVolumeClaim) error {
 	b.volumeCreated = pvc.ObjectMeta.CreationTimestamp.Time
 

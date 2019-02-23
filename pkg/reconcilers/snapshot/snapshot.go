@@ -17,14 +17,17 @@ type Reconciler struct {
 	runtime *runtime.Runtime
 }
 
-func (r *Reconciler) GetType() runtimeObj.Object {
-	return &snapshots.VolumeSnapshot{}
+// Return the types this reconciler reacts to.
+func (r *Reconciler) GetType() []runtimeObj.Object {
+	return []runtimeObj.Object{ &snapshots.VolumeSnapshot{} }
 }
 
+// Set the Kubernetes client for the reconciler.
 func (r *Reconciler) SetClient(client client.Client) {
 	r.client = client
 }
 
+// Set the backup-controller runtime for the reconciler.
 func (r *Reconciler) SetRuntime(runtime *runtime.Runtime) {
 	r.runtime = runtime
 }

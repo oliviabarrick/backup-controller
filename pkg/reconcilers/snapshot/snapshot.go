@@ -19,7 +19,7 @@ type Reconciler struct {
 
 // Return the types this reconciler reacts to.
 func (r *Reconciler) GetType() []runtimeObj.Object {
-	return []runtimeObj.Object{ &snapshots.VolumeSnapshot{} }
+	return []runtimeObj.Object{&snapshots.VolumeSnapshot{}}
 }
 
 // Set the Kubernetes client for the reconciler.

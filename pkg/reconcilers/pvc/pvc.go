@@ -19,7 +19,7 @@ type Reconciler struct {
 
 // Returns the type that the reconciler watches.
 func (r *Reconciler) GetType() []runtimeObj.Object {
-	return []runtimeObj.Object{ &corev1.PersistentVolumeClaim{}, }
+	return []runtimeObj.Object{&corev1.PersistentVolumeClaim{}}
 }
 
 // Set the Kubernetes client.

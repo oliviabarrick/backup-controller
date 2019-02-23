@@ -6,6 +6,7 @@ steps:
     image: golang:1.11-alpine
     environment:
       GO111MODULE: "on"
+      CGO_ENABLED: "0"
     commands:
       - apk update && apk add make git
       - make test

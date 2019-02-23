@@ -1,4 +1,13 @@
 apiVersion: v1
+kind: Namespace
+metadata:
+  name: backup-controller
+  labels:
+    system: "true"
+    operator: "true"
+    storage: "true"
+---
+apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: backup-controller

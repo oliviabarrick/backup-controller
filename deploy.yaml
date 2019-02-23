@@ -87,8 +87,8 @@ spec:
     spec:
       serviceAccountName: backup-controller
       containers:
-      - image: justinbarrick/backup-controller
-        imagePullPolicy: Always
+      - image: justinbarrick/backup-controller:0.1.0
+        imagePullPolicy: IfNotPresent
         name: backup-controller
         livenessProbe:
           httpGet:

@@ -92,12 +92,12 @@ spec:
         name: backup-controller
         livenessProbe:
           httpGet:
-            path: /mutate
+            path: /mutate-backup-controller
             port: 8443
             scheme: HTTPS
         readinessProbe:
           httpGet:
-            path: /mutate
+            path: /mutate-backup-controller
             port: 8443
             scheme: HTTPS
           initialDelaySeconds: 5

@@ -45,10 +45,9 @@ steps:
 
   - name: github_release
     image: plugins/github-release
-    environment:
-      github_token:
-        from_secret: github_token
     settings:
+      api_key:
+        from_secret: github_token
       files:
         - backup-controller
       checksum:

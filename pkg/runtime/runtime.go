@@ -28,7 +28,7 @@ import (
 type Reconciler interface {
 	SetClient(client.Client)
 	SetRuntime(*Runtime)
-	GetType() []runtime.Object
+	GetType() runtime.Object
 	Reconcile(request reconcile.Request) (reconcile.Result, error)
 }
 
@@ -150,15 +150,11 @@ func (b *Runtime) RegisterController(name string, reconciler Reconciler) error {
 		return err
 	}
 
-	for _, kind := range reconciler.GetType() {
-		if err := ctrlr.Watch(&source.Kind{
-			Type: kind,
-		}, &handler.EnqueueRequestForObject{}); err != nil {
-			return err
-		}
-	}
+	kind := reconciler.GetType()
 
-	return nil
+	return ctrlr.Watch(&source.Kind{
+		Type: kind,
+	}, &handler.EnqueueRequestForObject{})
 }
 
 // Return the Kubernetes client for the runtime.

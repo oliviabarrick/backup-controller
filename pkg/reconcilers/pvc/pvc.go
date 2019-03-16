@@ -9,6 +9,7 @@ import (
 	"log"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"time"
 )
 
 // Reconciler for reacting to PersistentVolumeClaim events.
@@ -18,8 +19,8 @@ type Reconciler struct {
 }
 
 // Returns the type that the reconciler watches.
-func (r *Reconciler) GetType() []runtimeObj.Object {
-	return []runtimeObj.Object{&corev1.PersistentVolumeClaim{}}
+func (r *Reconciler) GetType() runtimeObj.Object {
+	return &corev1.PersistentVolumeClaim{}
 }
 
 // Set the Kubernetes client.
@@ -47,9 +48,17 @@ func (r *Reconciler) Reconcile(request reconcile.Request) (reconcile.Result, err
 		return reconcile.Result{}, err
 	}
 
-	backup := r.runtime.Get(pvc.GetNamespace(), pvc.GetName())
-	backup.SetPersistentVolumeClaim(pvc)
-	backup.Schedule()
+	bc := r.runtime.Get(request.NamespacedName.Namespace, request.NamespacedName.Name)
 
-	return reconcile.Result{}, nil
+	if err := bc.SetPersistentVolumeClaim(pvc); err != nil {
+		return reconcile.Result{}, err
+	}
+
+	if !bc.HasSnapshotSchedule() {
+		return reconcile.Result{}, nil
+	}
+
+	return reconcile.Result{
+		RequeueAfter: time.Second * 60,
+	}, bc.Backup()
 }

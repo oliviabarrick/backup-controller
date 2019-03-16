@@ -32,13 +32,22 @@ func (b *BackupController) SetClient(client client.Client) {
 }
 
 // Create a new VolumeSnapshot for a PVC.
-func (b *BackupController) Backup() {
+func (b *BackupController) Backup() error {
+	needsSnapshot, err := b.NeedsSnapshot()
+	if err != nil {
+		return err
+	}
+
+	if !needsSnapshot {
+		return nil
+	}
+
 	log.Printf("It is time for a backup of %s!", b.Name)
 
 	randId, err := uuid.NewRandom()
 	if err != nil {
 		log.Println("random error", err)
-		return
+		return err
 	}
 
 	err = b.client.Create(context.TODO(), &snapshots.VolumeSnapshot{
@@ -55,13 +64,15 @@ func (b *BackupController) Backup() {
 	})
 	if err != nil {
 		log.Println("error creating VolumeSnapshot:", err)
-		return
+		return err
 	}
 
 	if err := b.GarbageCollectSnapshots(); err != nil {
 		log.Println("error garbage collecting snapshots:", err)
-		return
+		return err
 	}
+
+	return nil
 }
 
 // Delete any snapshots older than the retention period specified.
@@ -95,49 +106,68 @@ func (b *BackupController) GarbageCollectSnapshots() error {
 	return nil
 }
 
-// Schedule a backup for a PVC.
-func (b *BackupController) Schedule() {
-	if b.interval == nil {
-		return
+func (b *BackupController) GetLatest() (*snapshots.VolumeSnapshot, error) {
+	allSnapshots := &snapshots.VolumeSnapshotList{}
+
+	err := b.client.List(context.TODO(), &client.ListOptions{
+		Namespace: b.Namespace,
+	}, allSnapshots)
+	if err != nil {
+		return nil, err
 	}
 
-	if b.timer != nil {
-		b.timer.Stop()
+	mostRecentSnapshot := snapshots.VolumeSnapshot{}
+	gotSnapshot := false
+
+	for _, snapshot := range allSnapshots.Items {
+		creationTime := snapshot.ObjectMeta.CreationTimestamp.Time
+		mostRecentTime := mostRecentSnapshot.ObjectMeta.CreationTimestamp.Time
+
+		if creationTime.Before(mostRecentTime) {
+			continue
+		}
+
+		if snapshot.Spec.Source.Name != b.Name {
+			continue
+		}
+
+		gotSnapshot = true
+		mostRecentSnapshot = snapshot
 	}
 
-	checkTime := b.volumeCreated
-
-	if b.latest != (time.Time{}) {
-		checkTime = b.latest
+	if gotSnapshot {
+		return &mostRecentSnapshot, nil
+	} else {
+		return nil, nil
 	}
-
-	nextBackup := checkTime.Add(*b.interval).Sub(time.Now())
-
-	b.timer = time.AfterFunc(nextBackup, b.Backup)
-
-	log.Printf("Backup for %s scheduled for %s", b.Name, nextBackup)
 }
 
-// If t is more recent than the current latest, set latest to t.
-func (b *BackupController) SetLatest(t time.Time, snapshotId string) bool {
-	if b.latest == (time.Time{}) {
-		b.latest = t
-		b.latestId = snapshotId
-		return true
-	}
-
-	if t.Sub(b.latest).Seconds() > 0 {
-		b.latest = t
-		b.latestId = snapshotId
-		return true
-	}
-
-	return false
+// Return true if this is a PVC that does get backups.
+func (b *BackupController) HasSnapshotSchedule() bool {
+	return b.interval != nil
 }
 
-// Return the id of the latest snapshot.
-func (b *BackupController) GetLatest() string {
-	return b.latestId
+// Delete any snapshots older than the retention period specified.
+func (b *BackupController) NeedsSnapshot() (bool, error) {
+	if !b.HasSnapshotSchedule() {
+		return false, nil
+	}
+
+	mostRecentSnapshot, err := b.GetLatest()
+	if err != nil {
+		return false, err
+	}
+
+	mostRecentTime := b.volumeCreated
+	if mostRecentSnapshot != nil {
+		mostRecentSnapshotTime := mostRecentSnapshot.ObjectMeta.CreationTimestamp.Time
+
+		if mostRecentSnapshotTime.After(mostRecentTime) {
+			mostRecentTime = mostRecentSnapshotTime
+		}
+	}
+
+	return mostRecentTime.Add(*b.interval).Before(time.Now()), nil
 }
 
 // Set the PersistentVolumeClaim that this BackupController is for.

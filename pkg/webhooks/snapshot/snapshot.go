@@ -35,27 +35,37 @@ func (v *LatestSnapshotMutator) InjectDecoder(d types.Decoder) error {
 }
 
 // Set the DataSource on a persistent volume claim if the restore-latest key is present.
-func (v *LatestSnapshotMutator) MutatePvc(pvc *corev1.PersistentVolumeClaim) {
+func (v *LatestSnapshotMutator) MutatePvc(pvc *corev1.PersistentVolumeClaim) error {
 	annotations := pvc.ObjectMeta.GetAnnotations()
 	if annotations == nil || annotations[annotationKey] == "" {
-		return
+		return nil
 	}
 
 	backup := v.runtime.Get(pvc.GetNamespace(), pvc.GetName())
-	if backup.GetLatest() == "" {
-		log.Println("Not restoring PVC, no latest backup.")
-		return
+
+	latest, err := backup.GetLatest()
+	if err != nil {
+		return err
 	}
 
-	log.Println("Restoring PVC from", backup.GetLatest())
+	if latest == nil {
+		log.Println("Not restoring PVC, no latest backup.")
+		return nil
+	}
+
+	latestName := latest.ObjectMeta.Name
+
+	log.Println("Restoring PVC from", latestName)
 
 	apiGroup := "snapshot.storage.k8s.io"
 
 	pvc.Spec.DataSource = &corev1.TypedLocalObjectReference{
 		APIGroup: &apiGroup,
 		Kind:     "VolumeSnapshot",
-		Name:     backup.GetLatest(),
+		Name:     latestName,
 	}
+
+	return nil
 }
 
 // Handle an incoming webhook.

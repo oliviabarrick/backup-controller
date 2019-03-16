@@ -58,7 +58,13 @@ func (r *Reconciler) Reconcile(request reconcile.Request) (reconcile.Result, err
 		return reconcile.Result{}, nil
 	}
 
-	return reconcile.Result{
+	result := reconcile.Result{
 		RequeueAfter: time.Second * 60,
-	}, bc.Backup()
+	}
+
+	if err := bc.Backup(); err != nil {
+		return result, err
+	}
+
+	return result, bc.GarbageCollectSnapshots()
 }

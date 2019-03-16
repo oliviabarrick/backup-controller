@@ -67,11 +67,6 @@ func (b *BackupController) Backup() error {
 		return err
 	}
 
-	if err := b.GarbageCollectSnapshots(); err != nil {
-		log.Println("error garbage collecting snapshots:", err)
-		return err
-	}
-
 	return nil
 }
 
@@ -93,10 +88,15 @@ func (b *BackupController) GarbageCollectSnapshots() error {
 	for _, snapshot := range allSnapshots.Items {
 		snapExpiry := snapshot.ObjectMeta.CreationTimestamp.Time.Add(*b.retentionPeriod)
 
+		if snapshot.Spec.Source.Name != b.Name {
+			continue
+		}
+
 		if time.Now().Sub(snapExpiry).Seconds() < 0 {
 			continue
 		}
 
+		log.Println("Removing expired snapshot", snapshot.ObjectMeta.Name)
 		err = b.client.Delete(context.TODO(), &snapshot)
 		if err != nil {
 			return err

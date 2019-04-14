@@ -42,7 +42,7 @@ func (b *BackupController) Backup() error {
 		return nil
 	}
 
-	log.Printf("It is time for a backup of %s!", b.Name)
+	log.Printf("It is time for a backup of %s!\n", b.Name)
 
 	randId, err := uuid.NewRandom()
 	if err != nil {

@@ -1,3 +1,7 @@
+Release 0.1.4:
+
+56983aa (Justin Barrick): add newline to message about taking backups
+
 Release 0.1.3:
 
 4c816b7 (Justin Barrick): fix garbage collection
